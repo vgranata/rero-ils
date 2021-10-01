@@ -174,6 +174,7 @@ class ItemCirculation(ItemRecord):
         kwargs['transaction_date'] = datetime.utcnow().isoformat()
         document_pid = extracted_data_from_ref(item.get('document'))
         kwargs.setdefault('document_pid', document_pid)
+        # set the transaction location for the circulation transaction
         transaction_location_pid = kwargs.get(
             'transaction_location_pid', None)
         if not transaction_location_pid:
@@ -182,8 +183,17 @@ class ItemCirculation(ItemRecord):
             if transaction_library_pid is not None:
                 lib = Library.get_record_by_pid(transaction_library_pid)
                 kwargs['transaction_location_pid'] = \
-                    lib.get_pickup_location_pid()
-
+                    lib.get_transaction_location_pid()
+        # set the pickup_location_pid field if not found for loans that are
+        # ready for checkout.
+        if not kwargs.get('pickup_location_pid') and \
+            loan.get('state') in \
+                [
+                    LoanState.CREATED,
+                    LoanState.ITEM_AT_DESK
+                ]:
+            kwargs['pickup_location_pid'] = \
+                kwargs.get('transaction_location_pid')
         return loan, kwargs
 
     def checkin_item_on_shelf(self, loans_list, **kwargs):
