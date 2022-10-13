@@ -21,9 +21,13 @@ import hashlib
 from functools import partial
 
 import arrow
+from datetime import datetime
 from dateutil.relativedelta import relativedelta
+from elasticsearch_dsl.query import Q
 from flask import current_app
 from invenio_search.api import RecordsSearch
+from jsonschema import validate
+from jsonschema.exceptions import ValidationError
 
 from .models import StatIdentifier, StatMetadata
 from ..acq_order_lines.api import AcqOrderLinesSearch
@@ -35,10 +39,12 @@ from ..items.api import ItemsSearch
 from ..items.models import ItemCirculationAction
 from ..libraries.api import LibrariesSearch
 from ..loans.logs.api import LoanOperationLog
-from ..locations.api import LocationsSearch
+from ..locations.api import Location, LocationsSearch
 from ..minters import id_minter
+from rero_ils.modules.organisations.api import Organisation
 from ..patrons.api import Patron, PatronsSearch, current_librarian
 from ..providers import Provider
+from rero_ils.modules.stats_cfg.api import Stat_cfg
 from ..utils import extracted_data_from_ref
 
 # provider
@@ -685,6 +691,555 @@ class StatsForLibrarian(StatsForPricing):
         return stats
 
 
+class StatsReport:
+    """Statistics for report."""
+    def __init__(self):
+        self.indicators = ['number_of_checkouts', 'number_of_checkins',
+                           'number_of_renewals', 'number_of_requests',
+                           'number_of_documents',
+                           'number_of_created_documents',
+                           'number_of_items', 'number_of_created_items',
+                           'number_of_deleted_items',
+                           'number_of_holdings', 'number_of_created_holdings',
+                           'number_of_patrons', 'number_of_active_patrons',
+                           'number_of_ill_requests', 'number_of_notifications']
+
+        self.libraries = [{'pid': lib.pid, 'name': lib.name,
+                           'org_pid': lib.organisation.pid}
+                          for lib in StatsForLibrarian().get_all_libraries()]
+
+        self.organisations = Organisation.get_all()
+        self.locations = self.get_all_locations()
+
+        self.trigger_mapping = \
+            {'number_of_checkouts': ItemCirculationAction.CHECKOUT,
+             'number_of_checkins': ItemCirculationAction.CHECKIN,
+             'number_of_renewals': ItemCirculationAction.EXTEND,
+             'number_of_requests': ItemCirculationAction.REQUEST}
+
+        self.distributions_mapping = {
+                        'number_of_documents':
+                            {'library': 'holdings.organisation.library_pid',
+                             'time_range': {'_created': 'month'}},
+                        'number_of_items':
+                            {'library': 'library.pid',
+                             'location': 'location.pid',
+                             'type': 'type',
+                             'time_range': {'_created': 'month'}},
+                        'number_of_circ_operations':
+                            {'library': 'loan.item.library_pid',
+                             'patron_type': 'loan.patron.type',
+                             'document_type': 'loan.item.document.type',
+                             'transaction_channel': 'loan.transaction_channel',
+                             'pickup_location': 'loan.pickup_location.pid',
+                             'time_range': {'date': 'month'}},
+                              # TODO
+                              # 'transaction_library': 'library.value', 
+                              #  'item_location': 'loan.item.holding.location_name',
+                        'number_of_holdings':
+                            {'library': 'library.pid',
+                             'holding_type': 'holdings_type',
+                             'time_range': {'_created': 'month'}},
+                        'number_of_ill_requests':
+                                         {'library': 'library.pid',
+                                         'status': 'status',
+                                         'loan_status': 'loan_status',
+                                         'time_range': {'_created': 'month'}},
+                        'number_of_patrons':
+                                         {'library': 'patron.libraries.pid',  # patron affiliation library
+                                          'local_code': 'local_codes',
+                                          'role': 'roles',
+                                          'time_range': {'_created': 'month'}},
+                        'number_of_created_documents':
+                                            {'library': 'library.value',
+                                            'time_range': {'date': 'month'}},
+                        'number_of_deleted_items':
+                                            {'library': 'library.value',
+                                              'time_range': {'date': 'month'}},  # needs more than 1 query for distributions location and type
+                        'number_of_created_items':
+                                            {'library': 'library.value',
+                                             'time_range': {'date': 'month'}},  # the library exists only for some items. Needs more than 1 query for distributions location and type
+                        'number_of_created_holdings':
+                                            {'library': 'library.value',
+                                             'time_range': {'date': 'month'}},  # the library exists only for some items. Needs more than 1 query for distribution holding_type
+                        'number_of_active_patrons': {},  # needs more than 1 query
+                        'number_of_notifications': {},  # maybe not possible
+                        }
+
+        self.filter_indexes = {'operation_logs':
+                               {'items': 'loan.item.pid',
+                                'holdings': 'loan.holding.pid',
+                                'patrons': 'loan.patron.pid',
+                                'documents': 'loan.item.document.pid'}
+                               }
+        # TODO
+        # 'documents': {'items': 'holdings.items.pid',
+        #               'holdings': 'holdings.pid'}
+
+        # 'items': {'documents': 'document.pid',
+        #            'holdings': 'holding.pid'},
+
+        # the default value is 65536
+        # the maximum value that can be set is 2147483647
+        self.limit_pids = 65536
+        # self.limit_pids = 10
+
+        self.config = {}
+
+    
+    def get_library_pids(self, org_pid):
+        """Get libraries pids of organisation."""
+
+        library_pids = None
+        # current_librarian = Patron.get_record_by_pid(librarian_pid)
+        # if Patron.ROLE_SYSTEM_LIBRARIAN in current_librarian["roles"]:
+        #     patron_organisation = current_librarian.get_organisation()
+        libraries_search = LibrariesSearch()\
+            .filter('term', organisation__pid=org_pid)\
+            .source(['pid']).scan()
+        library_pids = [s.pid for s in libraries_search]
+
+        return library_pids
+
+    def get_all_locations(self):
+        """Get all locations.
+
+        :returns: formatted location names
+        """
+        locations = []
+        for pid in Location.get_all_pids():
+            record = Location.get_record_by_pid(pid)
+            locations.append({pid: f'{record["code"]}: {record["name"]}'})
+        return locations
+
+    def format_bucket_key(self, dist, bucket_dist):
+        """Format name of distribution to add in the results file
+
+        :param dist: distribution name
+        :param bucket_dist: bucket of the distribution
+        :returns: formatted name of distribution
+        """
+        bucket_key_formatted = None
+        if dist in ['location', 'pickup_location']:
+            bucket_key_formatted = [v for loc in self.locations
+                                    for k, v in loc.items()
+                                    if k == bucket_dist.key]
+            if bucket_key_formatted:
+                bucket_key_formatted = bucket_key_formatted[0]
+            else:
+                click.secho(f'WARNING: location pid {bucket_dist.key}\
+                            not in index locations', fg='yellow')
+
+        if dist == 'time_range':
+            date, _ = bucket_dist.key_as_string.split('T')
+            date = datetime.strptime(date, '%Y-%m-%d')
+            if self.config['period'] == 'year':
+                bucket_key_formatted = f'{date.year}'
+            else:
+                bucket_key_formatted = f'{date.year}-{date.month}'
+
+        return bucket_key_formatted or bucket_dist.key
+
+    def query_results_1(self, res):
+        """Process bucket results
+
+        Library is in distribution 1
+        :param res: result of query
+        :returns: formatted results
+        """
+        indicator = self.config['indicator']
+        dist2 = self.config['dist2']
+        library_pids = self.config['library_pids']
+
+        results = []
+        for bucket in res.aggregations:
+            for bucket_dist0 in bucket.buckets:
+                library = [lib for lib in self.libraries
+                            if lib['pid'] == bucket_dist0.key and
+                            lib['pid'] in library_pids]
+                if library:
+                    for bucket_dist2 in bucket_dist0.dist2.buckets:
+                        key_dist2 = self.format_bucket_key(dist2, bucket_dist2)
+                        if bucket_dist2.doc_count:
+                            results.append({dist2:key_dist2,
+                                            'org_pid':library[0]['org_pid'],
+                                            'library_pid':library[0]['pid'],
+                                            'library_name':library[0]['name'],
+                                            indicator:bucket_dist2.doc_count})
+                            # results.append([key_dist2,
+                            #                 library[0]['org_pid'],
+                            #                 library[0]['pid'],
+                            #                 library[0]['name'],
+                            #                 bucket_dist2.doc_count])
+        return results
+
+    def query_results_2(self, res):
+        """Process bucket results
+
+        Library is not in distribution 1 or 2
+        :param res: result of query
+        :returns: formatted results
+        """
+        indicator = self.config['indicator']
+        dist1 = self.config['dist1']
+        dist2 = self.config['dist2']
+        library_pids = self.config['library_pids']
+
+        results = []
+        for bucket in res.aggregations:
+            for bucket_dist0 in bucket:
+                library = [lib for lib in self.libraries
+                            if lib['pid'] == bucket_dist0.key and
+                            lib['pid'] in library_pids]
+                for bucket_dist1 in bucket_dist0.dist1.buckets:
+                    key_dist1 = self.format_bucket_key(dist1, bucket_dist1)
+                    for bucket_dist2 in bucket_dist1.dist2.buckets:
+                        key_dist2 = self.format_bucket_key(dist2, bucket_dist2)
+                        if bucket_dist2.doc_count:
+                            results.append({dist1:key_dist1,
+                                            dist2:key_dist2,
+                                            'org_pid':library[0]['org_pid'],
+                                            'library_pid':library[0]['pid'],
+                                            'library_name':library[0]['name'],
+                                            indicator:bucket_dist2.doc_count})
+                            # results.append((key_dist1,
+                            #                 key_dist2,
+                            #                 library[0]['org_pid'],
+                            #                 library[0]['pid'],
+                            #                 library[0]['name'],
+                            #                 bucket_dist2.doc_count))
+        return results
+
+    def query_filter(self, query, main_index):
+        """Add queries for filters to main query
+
+        :param query: query on the main index
+        :param main_index: the index of the indicator
+
+        :return: updated library pids and query
+        """
+        filters = self.config['filters']
+        library_pids = self.config['library_pids']
+
+        query_index = None
+        filter_pids = None
+
+        if main_index in self.filter_indexes:
+            filter_indexes = self.filter_indexes[main_index]
+
+            for f in filters.items():
+                filter_index = list(f)[0]
+                if filter_index in filter_indexes and filter_index is not main_index:
+                    if filter_index == 'items':
+                        query_index = ItemsSearch()[0:0]
+                        if library_pids:
+                            query_index = query_index\
+                                .filter('terms', library__pid=library_pids)
+                    elif filter_index == 'documents':
+                        query_index = DocumentsSearch()[0:0]
+                        if library_pids:
+                            query_index = query_index\
+                                .filter(
+                                    'terms',
+                                    holdings__organisation__library_pid=library_pids)
+                    elif filter_index == 'holdings':
+                        query_index = HoldingsSearch()[0:0]
+                        if library_pids:
+                            query_index = query_index\
+                                .filter('terms', library__pid=library_pids)
+                    elif filter_index == 'patrons':
+                        query_index = PatronsSearch()[0:0]
+                        if library_pids:
+                            query_index = query_index\
+                                .filter('terms',
+                                        patron__libraries__pid=library_pids)
+
+                    filter = filters[filter_index]
+                    results_filter = query_index\
+                        .filter('bool', must=[Q('query_string',
+                                                query=(filter))])\
+                        .source(['pid'])\
+                        .scan()
+                    filter_pids = list(set([s.pid for s in results_filter]))
+                    # IMPORTANT: for main indexes such as documents
+                    # where the agg is on multiple libraries
+                    # ('holdings.organisation.library_pid')
+                    # the filter must include the library pid
+
+                    # filter = filters[filter_index]
+                    # results_filter = query_index\
+                    #                 .filter('bool', must=[Q('query_string',
+                    #                                       query=(filter))])\
+                    #                 .source(['pid', 'library.pid'])\
+                    #                 .scan()
+                    # results = [(s.pid, s.library.pid)
+                    #            for s in results_filter]
+                    # filter_pids = list(set([s[0] for s in results]))
+                    # results_library_pids = [s[1] for s in results]
+                    # print(results_library_pids)
+                    # print(filter_pids)
+                    # print(library_pids)
+                    # if library_pids:
+                    #     library_pids = list(set(results_library_pids) &
+                    #                   set(library_pids))
+                    # else:
+                    #     library_pids = list(set(results_library_pids))
+
+                    # check the number of pids found is less than the limit
+                    # otherwise abort report
+                    if len(filter_pids) > self.limit_pids:
+                        return None, None
+
+                    query = query\
+                        .filter('bool', must=[Q('terms',
+                                **{filter_indexes[filter_index]:filter_pids})])
+
+        if main_index in filters:
+            query = query\
+                    .filter('bool', must=[
+                        Q('query_string', query=(filters[main_index]))])
+
+        # pprint(query.to_dict())
+
+        return library_pids, query
+
+    def query_aggs(self, query, fields):
+        """ Create aggregations and execute query
+
+        :param query: indicator query
+        :param fields: index fields on which to make the aggregations
+        :returns: results of query
+        """
+        indicator = self.config['indicator']
+        dist1 = self.config['dist1']
+        dist2 = self.config['dist2']
+        library_pids = self.config['library_pids']
+
+        size = 10000
+        field0 = fields['library']  # main filter
+        field1 = fields[dist1]
+        field2 = fields[dist2]
+
+        if dist1 == 'library':
+            if dist2 == 'time_range':
+                field_time_range = list(fields['time_range'])
+                value_time_range = fields['time_range'][field_time_range[0]]
+                query.aggs\
+                    .bucket('dist0', 'terms', field=field0, size=size)\
+                    .bucket('dist2', 'date_histogram',
+                            field=field_time_range[0],
+                            calendar_interval=value_time_range)
+            else:
+                query.aggs\
+                    .bucket('dist0', 'terms', field=field0, size=size)\
+                    .bucket('dist2', 'terms', field=field2, size=size)
+            # pprint(query.to_dict())
+            res = query.execute()
+            results = self.query_results_1(res)
+            # columns = (dist2, 'org_pid', 'library_pid', 'library_name',
+            #            indicator)
+            # results.insert(0, columns)
+        else:
+            if dist2 == 'time_range':
+                field_time_range = list(fields['time_range'])
+                value_time_range = fields['time_range'][field_time_range[0]]
+                query.aggs\
+                    .bucket('dist0', 'terms', field=field0, size=size)\
+                    .bucket('dist1', 'terms', field=field1, size=size)\
+                    .bucket('dist2', 'date_histogram',
+                            field=field_time_range[0],
+                            calendar_interval=value_time_range)
+            else:
+                query.aggs\
+                    .bucket('dist0', 'terms', field=field0, size=size)\
+                    .bucket('dist1', 'terms', field=field1, size=size)\
+                    .bucket('dist2', 'terms', field=field2, size=size)
+            res = query.execute()
+            results = self.query_results_2(res)
+            # columns = (dist1, dist2, 'org_pid', 'library_pid', 'library_name',
+            #            indicator)
+            # results.insert(0, columns)
+
+        return results
+
+    def number_of(self, query, main_index, trigger=None):
+        """Add filters and aggregations to query
+
+        :param query: main index query
+        :param main_index: main index
+        :param trigger: trigger checkin, checkout, extend or request
+        """
+        indicator = self.config['indicator']
+        dist1 = self.config['dist1']
+        dist2 = self.config['dist2']
+        filters = self.config['filters']
+        library_pids = self.config['library_pids']
+
+        if trigger:
+            fields = self.distributions_mapping['number_of_circ_operations']
+        else:
+            fields = self.distributions_mapping[indicator]
+
+        if library_pids:
+            query = query\
+                    .filter('bool', must=[
+                            Q('terms', **{fields['library']:library_pids})])
+
+        # add filter query
+        if filters:
+            library_pids, query = self.query_filter(query, main_index)
+            self.config['library_pids'] = library_pids
+            if not query:
+                return
+
+        # swap distributions, always put time_range in dist2
+        if 'time_range' == dist1:
+            self.config['dist1'] = dist2
+            self.config['dist2'] = 'time_range'
+        
+        # make aggregations according to distributions and execute query
+        results = self.query_aggs(query, fields)
+        # pprint(query.to_dict())
+        return results
+
+    def make_report(self, data):
+        """Make report
+
+        :param data: report configuration data
+        :returns: data of report
+        """
+        org_pid = data['org_pid']
+        
+        trigger = None
+        results = []
+        org = Organisation.get_record_by_pid(org_pid)
+        library_pids = [pid for pid in org.get_libraries_pids()]
+
+        self.config = {'indicator': data['indicator'],
+                       'dist1': data['dist1'],
+                       'dist2': data['dist2'],
+                       'filters': data['filters'],
+                       'library_pids': library_pids,
+                       'librarian_pid': data['librarian_pid'],
+                       'period': data['period']}
+
+        indicator = self.config["indicator"]
+        
+        if indicator in list(self.trigger_mapping):
+            trigger = self.trigger_mapping[indicator]
+
+        # change time_range calendar interval
+        if self.config["period"] == 'year':
+            if indicator in list(self.trigger_mapping):
+                indicator_key = 'number_of_circ_operations'
+            else:
+                indicator_key = indicator
+            time_range =\
+                self.distributions_mapping[indicator_key]['time_range']
+            time_range[next(iter(time_range.keys()))] = self.config["period"]
+            self.distributions_mapping[indicator_key]['time_range'] =\
+                time_range
+
+        # print(f'Number of files to create: {len(dists_pairs)}')
+
+        # for dist in dists_pairs:
+        print(f'Processing {indicator} - {self.config["dist1"]} vs {self.config["dist2"]} \
+                - filters: {self.config["filters"]}')
+        # filename = f'{indicator} - {self.config["dist1"]} vs {self.config["dist2"]}'
+        # self.config['dist1'] = dist[0]
+        # self.config['dist2'] = dist[1]
+
+        if indicator in list(self.trigger_mapping):
+            query = RecordsSearch(index=LoanOperationLog.index_name)[0:0]\
+                    .filter('term', record__type='loan')\
+                    .filter('term', loan__trigger=trigger)
+            results = self.number_of(query, 'operation_logs', trigger)
+        elif indicator == 'number_of_created_documents':
+            query = RecordsSearch(index=LoanOperationLog.index_name)[0:0]\
+                    .filter('term', record__type='doc')\
+                    .filter('term', operation='create')
+            results = self.number_of(query, 'operation_logs')
+        elif indicator == 'number_of_documents':
+            query = DocumentsSearch()[0:0]
+            results = self.number_of(query, 'documents')
+        elif indicator == 'number_of_items':
+            query = ItemsSearch()[0:0]
+            results = self.number_of(query, 'items')
+        elif indicator == 'number_of_holdings':
+            query = HoldingsSearch()[0:0]
+            results = self.number_of(query, 'holdings')
+        elif indicator == 'number_of_ill_requests':
+            query = ILLRequestsSearch()[0:0]
+            results = self.number_of(query, 'ill_requests')
+        elif indicator == 'number_of_deleted_items':
+            query = RecordsSearch(index=LoanOperationLog.index_name)[0:0]\
+                    .filter('term', record__type='item')\
+                    .filter('term', operation='delete')
+            results = self.number_of(query, 'operation_logs')
+        elif indicator == 'number_of_created_items':
+            query = RecordsSearch(index=LoanOperationLog.index_name)[0:0]\
+                    .filter('term', record__type='item')\
+                    .filter('term', operation='create')
+            results = self.number_of(query, 'operation_logs')
+        elif indicator == 'number_of_created_holdings':
+            query = RecordsSearch(index=LoanOperationLog.index_name)[0:0]\
+                    .filter('term', record__type='hold')\
+                    .filter('term', operation='create')
+            #         .source(['date','record.value'])\
+            #         .scan()
+            # for s in query:
+            #     print(s.date)
+            results = self.number_of(query, 'operation_logs')
+        elif indicator == 'number_of_patrons':
+            query = PatronsSearch()[0:0]
+            results = self.number_of(query, 'patrons')
+        elif indicator == 'number_of_active_patrons':
+            pass
+        elif indicator == 'number_of_notifications':
+            pass
+        
+        if results:
+            return results
+        return
+
+    def create(self, pid, dbcommit=False, reindex=False):
+        """Create report.
+        
+        :param pid: report configuration pid
+        """
+        config = Stat_cfg.get_record_by_pid(pid)
+        if not config:
+            return
+
+        results = self.make_report(config)
+        return Stat.create(dict(type='report', config_pid=pid,
+                            values=results),
+                    dbcommit=dbcommit, reindex=reindex)
+
+    def make_folder(self, path):
+        """Create folder
+
+        :param: path of folder
+        """
+        if not os.path.exists(path):
+            os.makedirs(path)
+
+    def make_csv(self, data, filename, indicator):
+        """Make csv file
+
+        :param data: query results
+        :param filename: name of file to create
+        :param indicator: indicator
+        """
+        file_path = f'{path}/results/{indicator}'
+        self.make_folder(file_path)
+        filename = f'{filename}.csv'
+        with open(f'{file_path}/{filename}', 'w') as f:
+            writer = csv.writer(f)
+            for d in data:
+                writer.writerow(d)
+
+
 class Stat(IlsRecord):
     """ItemType class."""
 
@@ -697,6 +1252,17 @@ class Stat(IlsRecord):
         """Update data for record."""
         super().update(data, commit, dbcommit, reindex)
         return self
+
+    def reasons_not_to_delete(self):
+        """Record deletion reasons."""
+        # check if pid corresponds to a report configuration
+        search = StatsSearch()\
+            .filter("term", type='report_config')\
+            .filter("term", pid=self.pid)
+        if search.count():
+            return StatsReportConfig.reasons_not_to_delete(self.pid)
+        
+        return {}
 
 
 class StatsIndexer(IlsRecordsIndexer):

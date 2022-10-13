@@ -20,7 +20,8 @@
 from celery import shared_task
 from flask import current_app
 
-from .api import Stat, StatsForLibrarian, StatsForPricing
+from rero.ils.modules.stat.api import Stat, StatsForLibrarian,\
+    StatsForPricing, StatsReport
 
 
 @shared_task()
@@ -49,3 +50,28 @@ def collect_stats_librarian():
             dbcommit=True, reindex=True)
         return f'New statistics of type {stat["type"]} has\
             been created with a pid of: {stat.pid}'
+
+
+@shared_task()
+def collect_stats_report():
+    """Collect and store the statistics for report."""
+
+    cfg_pids = get_cfgs()
+    for cfg_pid in cfg_pids:
+        stats_report = StatsReport.create(cfg_pid)
+
+    with current_app.app_context():
+        stat = Stat.create(
+            dict(type='report', values=stats_report),
+            dbcommit=True, reindex=True)
+        return f'New statistics of type {stat["type"]} has\
+            been created with a pid of: {stat.pid}'
+
+def get_cfgs():
+    """Get pids of configurations for which a report has to be created today"""
+    #TODO
+    # check frequency of configurations
+    # check date of today
+    # return cfg pid if today is the first of the month and frequency is month
+    # or if today is january first and frequency is year
+    return

@@ -19,10 +19,11 @@
 import csv
 
 from flask import current_app
+# from flask_login import current_user
 from invenio_records_rest.serializers.csv import CSVSerializer, Line
 from invenio_records_rest.serializers.response import add_link_header
 
-from ..patrons.api import Patron
+from rero_ils.modules.patrons.api import Patron
 
 
 class StatCSVSerializer(CSVSerializer):
@@ -77,7 +78,7 @@ class StatCSVSerializer(CSVSerializer):
                 value = StatCSVSerializer.sort_dict_by_key(value)[1]
                 writer.writerow(value)
                 yield line.read()
-        else:
+        elif record['metadata'].get('type') == 'billing':
             # statistics of type billing
             headers = set(('library name', 'library id'))
             for value in record['metadata']['values']:
@@ -105,6 +106,17 @@ class StatCSVSerializer(CSVSerializer):
                         for k, m in value[v].items():
                             dict_to_text += f'{k} :{m}\r\n'
                         value[v] = dict_to_text
+                writer.writerow(value)
+                yield line.read()
+        else:
+            # statistics of type report
+            fieldnames = list(record['metadata']['values'][0].keys())
+            line = Line()
+            writer = csv.DictWriter(line, fieldnames=fieldnames)
+            writer.writeheader()
+            yield line.read()
+
+            for value in record['metadata']['values']:
                 writer.writerow(value)
                 yield line.read()
 

@@ -1,0 +1,101 @@
+[
+{
+    "name": "Number of documents - library vs creation_date",
+    "description": "report catalogue/number_of_documents",
+    "category": "catalogue",
+    "indicator": "number_of_documents",
+    "distribution1": "library",
+    "distribution2": {"creation_date": "month"},
+    "filters": [],
+    "period": "",
+    "frequency": ""
+},
+{
+    "name": "Number of documents  - library vs creation_date - filtered",
+    "description": "report catalogue/number_of_documents",
+    "category": "catalogue",
+    "indicator": "number_of_documents",
+    "distribution1": "library",
+    "distribution2": {"creation_date": "month"},
+    "filters": [{"documents":"subjects.preferred_name:'Italie'"}],
+    "period": "",
+    "frequency": ""
+},
+{
+    "name": "Number of items - library vs creation_date",
+    "description": "report catalogue/number_of_items",
+    "category": "catalogue",
+    "indicator": "number_of_items",
+    "distribution1": "library",
+    "distribution2": {"creation_date": "month"},
+    "filters": [],
+    "period": "",
+    "frequency": ""
+},
+{
+    "name": "Number of items - location vs creation_date",
+    "description": "report catalogue/number_of_items",
+    "category": "catalogue",
+    "indicator": "number_of_items",
+    "distribution1": "location",
+    "distribution2": {"creation_date": "month"},
+    "filters": [],
+    "period": "",
+    "frequency": ""
+},
+{
+    "name": "Number of items - type vs creation_date",
+    "description": "report catalogue/number_of_items",
+    "category": "catalogue",
+    "indicator": "number_of_items",
+    "distribution1": "type",
+    "distribution2": {"creation_date": "month"},
+    "filters": [],
+    "period": "",
+    "frequency": ""
+},
+{
+    "name": "Number of items - library vs location",
+    "description": "report catalogue/number_of_items",
+    "category": "catalogue",
+    "indicator": "number_of_items",
+    "distribution1": "library",
+    "distribution2": "location",
+    "filters": [],
+    "period": "",
+    "frequency": ""
+},
+{
+    "name": "Number of items - library vs type",
+    "description": "report catalogue/number_of_items",
+    "category": "catalogue",
+    "indicator": "number_of_items",
+    "distribution1": "library",
+    "distribution2": "type",
+    "filters": [],
+    "period": "",
+    "frequency": ""
+},
+{
+    "name": "Number of items - location vs type",
+    "description": "report catalogue/number_of_items",
+    "category": "catalogue",
+    "indicator": "number_of_items",
+    "distribution1": "location",
+    "distribution2": "type",
+    "filters": [],
+    "period": "",
+    "frequency": ""
+},
+{
+    "name": "Number of items - library vs creation_date - filtered",
+    "description": "report catalogue/number_of_items",
+    "category": "catalogue",
+    "indicator": "number_of_items",
+    "distribution1": "library",
+    "distribution2": {"creation_date": "month"},
+    "filters": [{"items": "pac_code:(3_consumable OR 1_reserved)"}],
+    "period": "",
+    "frequency": ""
+}
+]

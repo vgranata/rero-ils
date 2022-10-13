@@ -25,6 +25,7 @@ from flask_login import current_user
 from rero_ils.modules.permissions import RecordPermission
 
 from .api import StatsForLibrarian
+from rero_ils.modules.patrons.api import current_librarian
 from ..permissions import record_permission_factory
 from ...permissions import admin_permission, librarian_permission, \
     monitoring_permission
@@ -60,9 +61,17 @@ class StatPermission(RecordPermission):
         if not (admin_permission.require().can() or
                 monitoring_permission.require().can()):
             if librarian_permission.require().can():
-                if 'type' not in record or record['type'] != 'librarian':
+                # if 'type' not in record or record['type'] != 'librarian':
+                if 'type' not in record or record['type'] == 'billing':
                     return False
-                record = filter_stat_by_librarian(record)
+                if record['type'] == 'librarian':
+                    record = filter_stat_by_librarian(record)
+                else:
+                    if not current_librarian.is_system_librarian:
+                        return False
+                    org_pid = current_librarian.organisation_pid
+                    if not record['values'][0]['org_pid'] == org_pid:
+                        return False
 
         return admin_permission.require().can() \
             or monitoring_permission.require().can() \
