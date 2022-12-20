@@ -68,8 +68,8 @@ class StatsReport(object):
                            'number_of_items', 'number_of_created_items',
                            'number_of_deleted_items',
                            'number_of_holdings', 'number_of_created_holdings',
-                           'number_of_patrons', 'number_of_active_patrons',
-                           'number_of_ill_requests', 'number_of_notifications']
+                           'number_of_patrons', 'number_of_ill_requests'
+                           ]
 
         self.libraries = [{'pid': lib.pid, 'name': lib.name,
                            'org_pid': lib.organisation.pid}
@@ -489,6 +489,7 @@ class StatsReport(object):
         filters = data.get('filters')
         library_pids = data.get('lib_pids')
         librarian_pid = data.get('librarian_pid')
+        org_pid = data.get('org_pid')
         period = data.get('period')
         
         trigger = None
@@ -518,6 +519,10 @@ class StatsReport(object):
         # case admin
         if not (librarian_pid and library_pids):
             library_pids = [lib['pid'] for lib in self.libraries]
+
+        if org_pid:
+            library_pids = [lib['pid'] for lib in self.libraries
+                            if lib['org_pid']==org_pid]
 
         self.config = {'indicator': indicator,
                        'dist1': dist1,
@@ -558,7 +563,7 @@ class StatsReport(object):
         for dist in dists_pairs:
             print(f'Processing {indicator} - {dist[0]} vs {dist[1]} \
                   - filters: {filters}')
-            filename = f'{indicator} - {dist[0]} vs {dist[1]}'
+            filename = f'{indicator}_{dist[0]}_vs_{dist[1]}'
             self.config['dist1'] = dist[0]
             self.config['dist2'] = dist[1]
 
@@ -657,8 +662,8 @@ def app_cli():
               help='librarian or system_librarian pid')
 @click.option('-lib_pids', default=None,
               help='library pids separated by comma. Ex: 1,2,3')
-@click.option('-org_pids', default=None,
-              help='organisation pids separated by comma. Ex: 1,2,3')
+@click.option('-org_pid', default=None,
+              help='organisation pid')
 @click.option('-d1', default=None, help='distribution 1')
 @click.option('-d2', default=None, help='distribution 2')
 @click.option('-f1_index', default=None, help='index for filter 1')
@@ -671,7 +676,7 @@ def app_cli():
                     it can be set to year')
 @with_appcontext
 def report(indicator,
-           librarian_pid, lib_pids, org_pids,
+           librarian_pid, lib_pids, org_pid,
            d1, d2,
            f1_index, f1, f2_index, f2, period):
     """Make stats report.
@@ -679,7 +684,7 @@ def report(indicator,
     :param indicator: indicator of the statistics
     :param librarian_pid: librarian or system_librarian pid
     :param lib_pids: library pids separated by comma. Ex: 1,2,3
-    :param org_pids: organisation pids separated by comma. Ex: 1,2,3
+    :param org_pid: organisation pid
     :param d1: distribution 1
     :param d2: distribution 2
     :param f1_index: filter 1 index
@@ -700,7 +705,7 @@ def report(indicator,
               'distribution2': d2,
               'filters': filters,
               'lib_pids': lib_pids,
-              'org_pids': org_pids,
+              'org_pid': org_pid,
               'librarian_pid': librarian_pid,
               'period': period}
 
