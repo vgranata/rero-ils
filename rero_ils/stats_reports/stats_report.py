@@ -617,10 +617,17 @@ class StatsReport(object):
                 pass
             
             if results:
+                # make csv file
+                if len(results) > 1:
+                    if self.config['dist1'] == 'library':
+                        results = self.table_one_distribution(results)
+                    else:
+                        results = self.table_two_distributions(results)
+
                 # add infos on filter to results
                 results[0] = results[0] + ("",) + \
                              (f'filters = {data["filters"]}',)
-                # make csv file
+
                 self.make_csv(results, filename, indicator)
             else:
                 click.secho(f'ABORTED: The report could not be created.',
@@ -644,11 +651,113 @@ class StatsReport(object):
         file_path = f'{path}/results/{indicator}'
         self.make_folder(file_path)
         filename = f'{filename}.csv'
+
         with open(f'{file_path}/{filename}', 'w') as f:
             writer = csv.writer(f)
             for d in data:
                 writer.writerow(d)
 
+    def table_one_distribution(self, data):
+        """Create table with distribution on x axis
+
+        The distribution is on the x axis and the library
+        is on the y axis.
+        :param data: query results
+        :returns: formatted data table
+        """
+        # unique values of distribution 1 as header
+        header = list(set(list(zip(*data[1:]))[0]))
+        len_header = len(header)
+        for value in ['library_name',
+                        'library_pid', 'org_pid']:
+            header.insert(0, value)
+
+        processed_data = []
+        for d in data[1:]:
+            row = [d[1], d[2], d[3]]
+            # prefill with value 0
+            for i in range(len_header):
+                row.insert(3+i, 0)
+            processed_data.append(row)
+        processed_data = [list(x) for x in set(tuple(x)
+                          for x in processed_data)]
+        processed_data = sorted(processed_data, key=lambda x: x[1])
+
+        for d2 in processed_data:
+            d2_index = processed_data.index(d2)
+            for d1 in data[1:]:
+                # library
+                if d2[1] == d1[2]:
+                    # distribution 1 value
+                    index = header.index(d1[0])
+                    # score
+                    d2[index] = d1[4]
+                    processed_data[d2_index] = d2
+
+        processed_data.insert(0, tuple(header))
+        return processed_data
+
+
+    def table_two_distributions(self, data):
+        """Create table with distributions on x axis and y axis
+
+        Distribution 1 is on the x axis and distribution 2 and the library
+        are on the y axis.
+        :param data: query results
+        :returns: formatted data table
+        """
+        # unique values of distribution 1 as header
+        header = list(set(list(zip(*data[1:]))[0]))
+        len_header = len(header)
+
+        if self.config['dist2'] == 'time_range':
+            if self.indicator in ['number_of_checkouts', 'number_of_checkins',
+                                  'number_of_renewals', 'number_of_requests']:
+                name_dist2 = 'transaction_date'
+            elif self.indicator in ['number_of_documents',
+                                    'number_of_created_documents',
+                                    'number_of_items',
+                                    'number_of_created_items',
+                                    'number_of_holdings',
+                                    'number_of_created_holdings',
+                                    'number_of_patrons',
+                                    'number_of_ill_requests']:
+                name_dist2 = 'creation_date'
+            elif self.indicator == 'number_of_deleted_items':
+                name_dist2 = 'deletion_date'
+        else:
+            name_dist2 = self.config['dist2']
+
+        for value in [name_dist2, 'library_name',
+                        'library_pid', 'org_pid']:
+            header.insert(0, value)
+        
+        processed_data = []
+        for d in data[1:]:
+            row = [d[2], d[3], d[4], d[1]]
+            # prefill with value 0
+            for i in range(len_header):
+                row.insert(4+i, 0)
+            processed_data.append(row)
+        processed_data = [list(x) for x in set(tuple(x)
+                          for x in processed_data)]
+        processed_data = sorted(processed_data, key=lambda x: x[1])
+
+        for d2 in processed_data:
+            d2_index = processed_data.index(d2)
+            for d1 in data[1:]:
+                # library
+                if d2[1] == d1[3]:
+                    # distribution 2 value
+                    if d2[3] == d1[1]:
+                        # distribution 1 value
+                        index = header.index(d1[0])
+                        # score
+                        d2[index] = d1[5]
+                        processed_data[d2_index] = d2
+
+        processed_data.insert(0, tuple(header))
+        return processed_data
 
 @click.group(cls=FlaskGroup, create_app=create_app)
 def app_cli():
