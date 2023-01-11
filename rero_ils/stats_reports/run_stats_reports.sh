@@ -3,4 +3,9 @@ indicators=('number_of_checkouts' 'number_of_checkins' 'number_of_renewals' 'num
 for indicator in ${indicators[@]}; do
     echo "$indicator"
     eval "poetry run rero_ils/stats_reports/stats_report.py reroils stats report $indicator -org_pid 1";
+    # eval "poetry run rero_ils/stats_reports/stats_report.py reroils stats report $indicator -org_pid 2";
+    # eval "poetry run rero_ils/stats_reports/stats_report.py reroils stats report $indicator -org_pid 3";
+    # eval "poetry run rero_ils/stats_reports/stats_report.py reroils stats report $indicator -org_pid 1 -period year";
+    # eval "poetry run rero_ils/stats_reports/stats_report.py reroils stats report $indicator -org_pid 2 -period year";
+    # eval "poetry run rero_ils/stats_reports/stats_report.py reroils stats report $indicator -org_pid 3 -period year";
 done

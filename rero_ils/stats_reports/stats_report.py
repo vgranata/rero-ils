@@ -108,8 +108,10 @@ class StatsReport(object):
                              'time_range': {'date': 'month'}},
                         'number_of_holdings':
                             {'library': 'library.pid',
-                             'holding_type': 'holdings_type',
                              'time_range': {'_created': 'month'}},
+                            # {'library': 'library.pid',
+                            #  'holding_type': 'holdings_type',
+                            #  'time_range': {'_created': 'month'}},
                         'number_of_ill_requests':
                                          {'library': 'library.pid',
                                          'status': 'status',
@@ -139,6 +141,7 @@ class StatsReport(object):
                                 'patrons': 'loan.patron.pid',
                                 'documents': 'loan.item.document.pid'}
                                }
+
         # TODO
         # 'documents': {'items': 'holdings.items.pid',
         #               'holdings': 'holdings.pid'}
@@ -563,7 +566,7 @@ class StatsReport(object):
         for dist in dists_pairs:
             print(f'Processing {indicator} - {dist[0]} vs {dist[1]} \
                   - filters: {filters}')
-            filename = f'{indicator}_{dist[0]}_vs_{dist[1]}'
+            # filename = f'{indicator}_{dist[0]}_vs_{dist[1]}'
             self.config['dist1'] = dist[0]
             self.config['dist2'] = dist[1]
 
@@ -628,7 +631,7 @@ class StatsReport(object):
                 results[0] = results[0] + ("",) + \
                              (f'filters = {data["filters"]}',)
 
-                self.make_csv(results, filename, indicator)
+                self.make_csv(results)
             else:
                 click.secho(f'ABORTED: The report could not be created.',
                             fg='red')
@@ -641,21 +644,46 @@ class StatsReport(object):
         if not os.path.exists(path):
             os.makedirs(path)
 
-    def make_csv(self, data, filename, indicator):
+    def make_csv(self, data):
         """Make csv file
 
         :param data: query results
-        :param filename: name of file to create
-        :param indicator: indicator
         """
-        file_path = f'{path}/results/{indicator}'
-        self.make_folder(file_path)
-        filename = f'{filename}.csv'
+        name_dist2 = self.time_range_mapping()
+        filename = f'{self.config["indicator"]}_{self.config["dist1"]}_vs_{name_dist2}.csv'
 
+        file_path = f'{path}/results/{self.config["indicator"]}'
+        self.make_folder(file_path)
         with open(f'{file_path}/{filename}', 'w') as f:
             writer = csv.writer(f)
             for d in data:
                 writer.writerow(d)
+
+    def time_range_mapping(self):
+        """Change name of distribution time_range according to indicator
+
+        :returns: name of distribution 2
+        """
+        name_dist2 = self.config['dist2']
+        if self.config['dist2'] == 'time_range':
+            if self.config['indicator'] in ['number_of_checkouts',
+                                            'number_of_checkins',
+                                            'number_of_renewals',
+                                            'number_of_requests']:
+                name_dist2 = 'transaction_date'
+            elif self.config['indicator'] in ['number_of_documents',
+                                    'number_of_created_documents',
+                                    'number_of_items',
+                                    'number_of_created_items',
+                                    'number_of_holdings',
+                                    'number_of_created_holdings',
+                                    'number_of_patrons',
+                                    'number_of_ill_requests']:
+                name_dist2 = 'creation_date'
+            elif self.config['indicator'] == 'number_of_deleted_items':
+                name_dist2 = 'deletion_date'
+        return name_dist2
+
 
     def table_one_distribution(self, data):
         """Create table with distribution on x axis
@@ -709,24 +737,7 @@ class StatsReport(object):
         # unique values of distribution 1 as header
         header = list(set(list(zip(*data[1:]))[0]))
         len_header = len(header)
-
-        if self.config['dist2'] == 'time_range':
-            if self.indicator in ['number_of_checkouts', 'number_of_checkins',
-                                  'number_of_renewals', 'number_of_requests']:
-                name_dist2 = 'transaction_date'
-            elif self.indicator in ['number_of_documents',
-                                    'number_of_created_documents',
-                                    'number_of_items',
-                                    'number_of_created_items',
-                                    'number_of_holdings',
-                                    'number_of_created_holdings',
-                                    'number_of_patrons',
-                                    'number_of_ill_requests']:
-                name_dist2 = 'creation_date'
-            elif self.indicator == 'number_of_deleted_items':
-                name_dist2 = 'deletion_date'
-        else:
-            name_dist2 = self.config['dist2']
+        name_dist2 = self.time_range_mapping()
 
         for value in [name_dist2, 'library_name',
                         'library_pid', 'org_pid']:
@@ -741,7 +752,6 @@ class StatsReport(object):
             processed_data.append(row)
         processed_data = [list(x) for x in set(tuple(x)
                           for x in processed_data)]
-        processed_data = sorted(processed_data, key=lambda x: x[1])
 
         for d2 in processed_data:
             d2_index = processed_data.index(d2)
@@ -756,6 +766,14 @@ class StatsReport(object):
                         d2[index] = d1[5]
                         processed_data[d2_index] = d2
 
+        # sort by library_pid and dist2
+        if self.config['dist2'] == 'time_range':
+            if self.config['period'] == 'year':
+                processed_data = sorted(processed_data, key=lambda x: (x[1], datetime.strptime(x[3], "%Y")))
+            else:
+                processed_data = sorted(processed_data, key=lambda x: (x[1], datetime.strptime(x[3], "%Y-%m")))
+        else:
+            processed_data = sorted(processed_data, key=lambda x: (x[1], x[3]))
         processed_data.insert(0, tuple(header))
         return processed_data
 
@@ -802,7 +820,7 @@ def report(indicator,
     :param f2: filter 2
     :param period: time range for statistics, can be 'month' or 'year'
     """
-    start = time.time()
+    # start = time.time()
     filters = {}
     if f1:
         filters[f1_index] = f1
@@ -871,8 +889,8 @@ def report(indicator,
         return
 
     report.make_report(data)
-    end = time.time()
-    print(end-start)
+    # end = time.time()
+    # print(end-start)
 
 
 # make this file usable as script
