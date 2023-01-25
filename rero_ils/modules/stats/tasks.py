@@ -20,7 +20,7 @@
 from celery import shared_task
 from flask import current_app
 
-from rero.ils.modules.stat.api import Stat, StatsForLibrarian,\
+from rero_ils.modules.stats.api import Stat, StatsForLibrarian,\
     StatsForPricing, StatsReport
 
 
